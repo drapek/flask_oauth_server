@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Drapek oAuth server</title>
+</head>
+<body>
+
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title></title>
+</head>
+<body>
+  {% if user %}
+    <p>You are {{ user.username }}</p>
+  {% else %}
+    <p>You are not authenticated</p>
+  {% endif %}
+
+  <p>Please type any credentials:</p>
+  <form method="post" action="/">
+    <label for="username">username:</label>
+    <input id="username" type="text" name="username">
+    <label for="email">email:</label>
+    <input id="email" type="text" name="email">
+    <input type="submit">
+  </form>
+</body>
+</html>
