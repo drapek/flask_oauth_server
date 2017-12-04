@@ -1,0 +1,15 @@
+{% extends "layout.html" %}
+
+{% block body %}
+<h2>Allow?</h2>
+Would you like to allow access to:
+{% for scope in scopes %}
+[{{scope}}]
+{% endfor %}
+for the [{{client}}] client?
+
+<form action="" method="post">
+  <button name="confirm" value="yes">Confirm</button>
+  <button name="confirm" value="no">Cancel</button>
+</form>
+{% endblock %}

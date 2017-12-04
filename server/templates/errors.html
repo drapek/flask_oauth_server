@@ -1,0 +1,11 @@
+{% extends "layout.html" %}
+
+{% block body %}
+<h1>Errors</h1>
+{% for i in range(0, error|length) %}
+<h2>{{error[i]}}</h2>
+{% if error_description %}
+<p>{{error_description[i]}}</p>
+{% endif %}
+{% endfor %}
+{% endblock %}

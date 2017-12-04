@@ -1,42 +1,47 @@
+# coding: utf-8
+import logging
+from bcrypt import checkpw
+from urllib.parse import quote
 from datetime import datetime, timedelta
-from flask import Flask
-from flask import session, request
-from flask import render_template, redirect, jsonify
+from flask import g, render_template, request, jsonify, make_response, session, url_for, redirect
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import gen_salt
+from sqlalchemy.orm import relationship
 from flask_oauthlib.provider import OAuth2Provider
+from flask_oauthlib.contrib.oauth2 import bind_sqlalchemy
+from flask_oauthlib.contrib.oauth2 import bind_cache_grant
 
 
-app = Flask(__name__, template_folder='templates')
-app.debug = True
-app.secret_key = 'secret'
-app.config.update({
-    'SQLALCHEMY_DATABASE_URI': 'sqlite:///db.sqlite',
-})
-db = SQLAlchemy(app)
-oauth = OAuth2Provider(app)
+db = SQLAlchemy()
+log = logging.getLogger('flask_oauthlib')
 
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(40), unique=True)
-    email = db.Column(db.String(40), unique=True)
-    address = db.Column(db.String(128), unique=True)
+    username = db.Column(db.String(40), unique=True, index=True,
+                         nullable=False)
+    address = db.Column(db.String(120), nullable=False)
+    email = db.Column(db.String(120), nullable=False)
+    real_name = db.Column(db.String(120), nullable=False)
+    encrypted_password = db.Column(db.String(60), nullable=False)
+
+    def check_password(self, password):
+        return checkpw(password.encode('utf-8'), self.encrypted_password.encode('utf-8'))
 
 
 class Client(db.Model):
+    # id = db.Column(db.Integer, primary_key=True)
+    # human readable name
+    name = db.Column(db.String(40))
     client_id = db.Column(db.String(40), primary_key=True)
-    client_secret = db.Column(db.String(55), nullable=False)
-
-    user_id = db.Column(db.ForeignKey('user.id'))
-    user = db.relationship('User')
-
+    client_secret = db.Column(db.String(55), unique=True, index=True,
+                              nullable=False)
+    client_type = db.Column(db.String(20), default='public')
     _redirect_uris = db.Column(db.Text)
-    _default_scopes = db.Column(db.Text)
+    default_scope = db.Column(db.Text, default='email address real_name')
 
     @property
-    def client_type(self):
-        return 'public'
+    def user(self):
+        return User.query.get(1)
 
     @property
     def redirect_uris(self):
@@ -50,31 +55,32 @@ class Client(db.Model):
 
     @property
     def default_scopes(self):
-        if self._default_scopes:
-            return self._default_scopes.split()
+        if self.default_scope:
+            return self.default_scope.split()
         return []
+
+    @property
+    def allowed_grant_types(self):
+        return ['authorization_code', 'token', 'refresh_token']
 
 
 class Grant(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-
     user_id = db.Column(
         db.Integer, db.ForeignKey('user.id', ondelete='CASCADE')
     )
-    user = db.relationship('User')
+    user = relationship('User')
 
     client_id = db.Column(
-        db.String(40), db.ForeignKey('client.client_id'),
+        db.String(40), db.ForeignKey('client.client_id', ondelete='CASCADE'),
         nullable=False,
     )
-    client = db.relationship('Client')
-
+    client = relationship('Client')
     code = db.Column(db.String(255), index=True, nullable=False)
 
     redirect_uri = db.Column(db.String(255))
+    scope = db.Column(db.Text)
     expires = db.Column(db.DateTime)
-
-    _scopes = db.Column(db.Text)
 
     def delete(self):
         db.session.delete(self)
@@ -83,180 +89,287 @@ class Grant(db.Model):
 
     @property
     def scopes(self):
-        if self._scopes:
-            return self._scopes.split()
-        return []
+        if self.scope:
+            return self.scope.split()
+        return None
 
 
 class Token(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     client_id = db.Column(
-        db.String(40), db.ForeignKey('client.client_id'),
+        db.String(40), db.ForeignKey('client.client_id', ondelete='CASCADE'),
         nullable=False,
     )
-    client = db.relationship('Client')
-
     user_id = db.Column(
-        db.Integer, db.ForeignKey('user.id')
+        db.Integer, db.ForeignKey('user.id', ondelete='CASCADE')
     )
-    user = db.relationship('User')
-
-    # currently only bearer is supported
+    user = relationship('User')
+    client = relationship('Client')
     token_type = db.Column(db.String(40))
-
-    access_token = db.Column(db.String(255), unique=True)
-    refresh_token = db.Column(db.String(255), unique=True)
+    access_token = db.Column(db.String(255))
+    refresh_token = db.Column(db.String(255))
     expires = db.Column(db.DateTime)
-    _scopes = db.Column(db.Text)
+    scope = db.Column(db.Text)
+
+    def __init__(self, **kwargs):
+        expires_in = kwargs.pop('expires_in', None)
+        if expires_in is not None:
+            self.expires = datetime.utcnow() + timedelta(seconds=expires_in)
+
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
     @property
     def scopes(self):
-        if self._scopes:
-            return self._scopes.split()
+        if self.scope:
+            return self.scope.split()
         return []
+
+    def delete(self):
+        db.session.delete(self)
+        db.session.commit()
+        return self
 
 
 def current_user():
-    if 'id' in session:
-        uid = session['id']
-        return User.query.get(uid)
-    return None
+    return g.user
 
 
-@app.route('/', methods=('GET', 'POST'))
-def home():
-    if request.method == 'POST':
+def cache_provider(app):
+    oauth = OAuth2Provider(app)
+
+    bind_sqlalchemy(oauth, db.session, user=User,
+                    token=Token, client=Client)
+
+    app.config.update({'OAUTH2_CACHE_TYPE': 'simple'})
+    bind_cache_grant(app, oauth, current_user)
+    return oauth
+
+
+def sqlalchemy_provider(app):
+    oauth = OAuth2Provider(app)
+
+    bind_sqlalchemy(oauth, db.session, user=User, token=Token,
+                    client=Client, grant=Grant, current_user=current_user)
+
+    return oauth
+
+
+def default_provider(app):
+    oauth = OAuth2Provider(app)
+
+    @oauth.clientgetter
+    def get_client(client_id):
+        return Client.query.filter_by(client_id=client_id).first()
+
+    @oauth.grantgetter
+    def get_grant(client_id, code):
+        return Grant.query.filter_by(client_id=client_id, code=code).first()
+
+    @oauth.tokengetter
+    def get_token(access_token=None, refresh_token=None):
+        if access_token:
+            return Token.query.filter_by(access_token=access_token).first()
+        if refresh_token:
+            return Token.query.filter_by(refresh_token=refresh_token).first()
+        return {}
+
+    @oauth.grantsetter
+    def set_grant(client_id, code, request, *args, **kwargs):
+        expires = datetime.utcnow() + timedelta(seconds=100)
+        grant = Grant(
+            client_id=client_id,
+            code=code['code'],
+            redirect_uri=request.redirect_uri,
+            scope=' '.join(request.scopes),
+            user_id=g.user.id,
+            expires=expires,
+        )
+        db.session.add(grant)
+        db.session.commit()
+
+    @oauth.tokensetter
+    def set_token(token, request, *args, **kwargs):
+        # In real project, a token is unique bound to user and client.
+        # Which means, you don't need to create a token every time.
+        tok = Token(**token)
+        tok.user_id = request.user.id if request.user else session.get('user_id', None)
+        tok.client_id = request.client.client_id
+        db.session.add(tok)
+        db.session.commit()
+
+    @oauth.usergetter
+    def get_user(username, password, *args, **kwargs):
+        # This is optional, if you don't need password credential
+        # there is no need to implement this method
+        return User.query.filter_by(username=username).first()
+
+    return oauth
+
+
+def prepare_app(app):
+    db.init_app(app)
+    db.app = app
+    db.create_all()
+
+    if User.query.count() is not 0:
+        return app
+
+    client1 = Client(
+        name='dev', client_id='dev', client_secret='dev',
+        _redirect_uris=(
+            'https://localhost:20444/authorized'
+        ),
+    )
+
+    client2 = Client(
+        name='confidential', client_id='confidential',
+        client_secret='confidential', client_type='confidential',
+        _redirect_uris=(
+            'https://localhost:20444/authorized'
+        ),
+    )
+
+    admin = User(username='admin', encrypted_password='$2b$12$O0PRNPdSdMcLWNUivIiAl.UUVjqvEWa1YxfFIhqUzVaI7NgZ7.cL.',
+                 email='admin@edu.pl', real_name='', address='Koszykowa 75')
+    alice = User(username='alice', encrypted_password='$2b$12$SkOiWN4CzoRVAsoIi6G9D.xdHi.1vTWQ4SbYRjwX87asUZ9gj3yOu',
+                 email='alice@edu.pl', real_name='Alice Wonderland', address='Wonderland')
+    bob = User(username='bob',   encrypted_password='$2b$12$1Hk7FV7zRK3Qfhr0zWMVz.ZXqDw8HRuDr3HdRl73ullJW5gxULZuq',
+               email='bob@edu.pl', real_name='Bob Builder', address='Radom')
+
+    try:
+        db.session.add(admin)
+        db.session.add(alice)
+        db.session.add(bob)
+        db.session.add(client1)
+        db.session.add(client2)
+        db.session.commit()
+    except Exception as e:
+        print('Error while creating the database')
+        print(e)
+        db.session.rollback()
+    return app
+
+
+def create_server(application, oauth=None):
+    if not oauth:
+        oauth = default_provider(application)
+    application = prepare_app(application)
+
+    @application.before_request
+    def load_current_user():
+        if 'user_id' not in session:
+            g.user = None
+        else:
+            user = User.query.get(session['user_id'])
+            g.user = user
+
+    @application.route('/home')
+    def home():
+        return render_template('home.html')
+
+    @application.route('/login', methods=['GET', 'POST'])
+    def login():
+        if request.method == 'GET':
+            return render_template('login.html')
         username = request.form.get('username')
-        email = request.form.get('email')
-        address = request.form.get('address')
-        user = User.query.filter_by(username=username).first()
-        if not user:
-            user = User(username=username, email=email, address=address)
-            db.session.add(user)
-            db.session.commit()
-        session['id'] = user.id
-        return redirect('/')
-    user = current_user()
-    return render_template('home.html', user=user)
+        password = request.form.get('password')
+        if not username or not password:
+            return render_template('errors.html', error=[u'Provide both username and password'])
+        query = User.query.filter_by(username=username)
+        user = None if query.count() is not 1 else query.one()
+        valid = False if user is None else user.check_password(password)
+        if not valid:
+            return render_template('errors.html', error=[u'Incorrect username or password'])
+        session['user_id'] = user.id
+        if 'redirect' in request.args:
+            return redirect(request.args.get('redirect'))
+        return redirect(url_for('home'))
 
+    @application.route('/logout')
+    def logout():
+        session.clear()
+        return redirect(url_for('login'))
 
-@app.route('/client')
-def client():
-    user = current_user()
-    if not user:
-        return redirect('/')
-    item = Client(
-        client_id=gen_salt(40),
-        client_secret=gen_salt(50),
-        _redirect_uris=' '.join([
-            'http://localhost:8000/authorized',
-            'http://127.0.0.1:8000/authorized',
-            'http://127.0.1:8000/authorized',
-            'http://127.1:8000/authorized',
-            ]),
-        _default_scopes='email address',
-        user_id=user.id,
-    )
-    db.session.add(item)
-    db.session.commit()
-    return jsonify(
-        client_id=item.client_id,
-        client_secret=item.client_secret,
-    )
+    @application.route('/oauth/errors')
+    def errors(*args, **kwargs):
+        return render_template('errors.html', **request.args)
 
+    @application.route('/oauth/authorize', methods=['GET', 'POST'])
+    @oauth.authorize_handler
+    def authorize(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect('/login?redirect='+quote(request.url))
+        # NOTICE: for real project, you need to require login
+        if request.method == 'GET':
+            # render a page for user to confirm the authorization
+            scopes = kwargs.get('scopes')
+            client = Client.query.get(kwargs.get('client_id'))
+            return render_template('confirm.html', scopes=scopes, client=client.name)
 
-@oauth.clientgetter
-def load_client(client_id):
-    return Client.query.filter_by(client_id=client_id).first()
+        if request.method == 'HEAD':
+            # if HEAD is supported properly, request parameters like
+            # client_id should be validated the same way as for 'GET'
+            response = make_response('', 200)
+            response.headers['X-Client-ID'] = kwargs.get('client_id')
+            return response
 
+        confirm = request.form.get('confirm', 'no')
+        return confirm == 'yes'
 
-@oauth.grantgetter
-def load_grant(client_id, code):
-    return Grant.query.filter_by(client_id=client_id, code=code).first()
+    @application.route('/oauth/token', methods=['POST', 'GET'])
+    @oauth.token_handler
+    def access_token():
+        return {}
 
+    @application.route('/oauth/revoke', methods=['POST'])
+    @oauth.revoke_handler
+    def revoke_token():
+        pass
 
-@oauth.grantsetter
-def save_grant(client_id, code, request, *args, **kwargs):
-    # decide the expires time yourself
-    expires = datetime.utcnow() + timedelta(seconds=100)
-    grant = Grant(
-        client_id=client_id,
-        code=code['code'],
-        redirect_uri=request.redirect_uri,
-        _scopes=' '.join(request.scopes),
-        user=current_user(),
-        expires=expires
-    )
-    db.session.add(grant)
-    db.session.commit()
-    return grant
+    @application.route('/api/email')
+    @oauth.require_oauth('email')
+    def email_api():
+        oauth = request.oauth
+        return jsonify(email=oauth.user.email, username=oauth.user.username)
 
+    @application.route('/api/real_name')
+    @oauth.require_oauth('real_name')
+    def real_name_api():
+        oauth = request.oauth
+        return jsonify(email=oauth.user.real_name, username=oauth.user.username)
 
-@oauth.tokengetter
-def load_token(access_token=None, refresh_token=None):
-    if access_token:
-        return Token.query.filter_by(access_token=access_token).first()
-    elif refresh_token:
-        return Token.query.filter_by(refresh_token=refresh_token).first()
+    @application.route('/api/client')
+    @oauth.require_oauth()
+    def client_api():
+        oauth = request.oauth
+        return jsonify(client=oauth.client.real_name)
 
+    @application.route('/api/address')
+    @oauth.require_oauth('address')
+    def address_api():
+        oauth = request.oauth
+        return jsonify(address=oauth.user.address, username=oauth.user.username)
 
-@oauth.tokensetter
-def save_token(token, request, *args, **kwargs):
-    toks = Token.query.filter_by(
-        client_id=request.client.client_id,
-        user_id=request.user.id
-    )
-    # make sure that every client has only one token connected to a user
-    for t in toks:
-        db.session.delete(t)
+    @application.route('/api/method', methods=['GET', 'POST', 'PUT', 'DELETE'])
+    @oauth.require_oauth()
+    def method_api():
+        return jsonify(method=request.method)
 
-    expires_in = token.pop('expires_in')
-    expires = datetime.utcnow() + timedelta(seconds=expires_in)
+    @oauth.invalid_response
+    def require_oauth_invalid(req):
+        return jsonify(message=req.error_message), 401
 
-    tok = Token(
-        access_token=token['access_token'],
-        refresh_token=token['refresh_token'],
-        token_type=token['token_type'],
-        _scopes=token['scope'],
-        expires=expires,
-        client_id=request.client.client_id,
-        user_id=request.user.id,
-    )
-    db.session.add(tok)
-    db.session.commit()
-    return tok
-
-
-@app.route('/oauth/token', methods=['GET', 'POST'])
-@oauth.token_handler
-def access_token():
-    return None
-
-
-@app.route('/oauth/authorize', methods=['GET', 'POST'])
-@oauth.authorize_handler
-def authorize(*args, **kwargs):
-    user = current_user()
-    if not user:
-        return redirect('/')
-    if request.method == 'GET':
-        client_id = kwargs.get('client_id')
-        client = Client.query.filter_by(client_id=client_id).first()
-        kwargs['client'] = client
-        kwargs['user'] = user
-        return render_template('authorize.html', **kwargs)
-
-    confirm = request.form.get('confirm', 'no')
-    return confirm == 'yes'
-
-
-@app.route('/api/me')
-@oauth.require_oauth()
-def me():
-    user = request.oauth.user
-    return jsonify(username=user.username, email=user.email, address=user.address)
+    return application
 
 
 if __name__ == '__main__':
-    db.create_all()
-    app.run()
+    from flask import Flask
+    app = Flask(__name__)
+    app.debug = True
+    app.secret_key = 'development'
+    app.config.update({
+        'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.sqlite'
+    })
+    app = create_server(app)
+    app.run(port=20443, ssl_context='adhoc')
