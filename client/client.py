@@ -1,3 +1,4 @@
+from OpenSSL import SSL
 from flask import Flask, url_for, session, request, jsonify
 from flask_oauthlib.client import OAuth
 
@@ -56,4 +57,8 @@ if __name__ == '__main__':
     import os
     os.environ['DEBUG'] = 'true'
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = 'true'
-    app.run(host='localhost', port=8000, ssl_context='adhoc')
+    # context = SSL.Context(SSL.SSLv23_METHOD)
+    # context.use_privatekey_file('client.key')
+    # context.use_certificate_file('client.crt')
+    context = ('client.crt', 'client.key')
+    app.run(host='localhost', port=8000, ssl_context=context)  # originally ssl_context='adhoc'

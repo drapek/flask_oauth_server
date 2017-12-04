@@ -1,5 +1,6 @@
 # coding: utf-8
 import logging
+from OpenSSL import SSL
 from bcrypt import checkpw
 from urllib.parse import quote
 from datetime import datetime, timedelta
@@ -372,4 +373,9 @@ if __name__ == '__main__':
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.sqlite'
     })
     app = create_server(app)
-    app.run(port=8888, ssl_context='adhoc')
+
+    # context = SSL.Context(SSL.SSLv23_METHOD)
+    # context.use_privatekey_file('server.key')
+    # context.use_certificate_file('server.crt')
+    context = ('server.crt', 'server.key')
+    app.run(port=8888, ssl_context=context, threaded=True, debug=True)
