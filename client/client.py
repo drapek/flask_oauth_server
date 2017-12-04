@@ -8,14 +8,14 @@ CLIENT_SECRET = 'dev'
 
 app = Flask(__name__)
 app.debug = True
-app.secret_key = 'secret'
+app.secret_key = 'development'
 oauth = OAuth(app)
 
 remote = oauth.remote_app(
-    'remote',
+    'dev',
     consumer_key=CLIENT_ID,
     consumer_secret=CLIENT_SECRET,
-    request_token_params={'scope': 'email address'},
+    request_token_params={'scope': 'email address'},  # TODO address real_name
     base_url='https://127.0.0.1:8888/login',
     request_token_url=None,
     access_token_url='https://127.0.0.1:8888/oauth/token',

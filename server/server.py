@@ -218,7 +218,7 @@ def prepare_app(app):
     client1 = Client(
         name='dev', client_id='dev', client_secret='dev',
         _redirect_uris=(
-            'https://localhost:20444/authorized'
+            'https://localhost:8000/authorized'
         ),
     )
 
@@ -226,7 +226,7 @@ def prepare_app(app):
         name='confidential', client_id='confidential',
         client_secret='confidential', client_type='confidential',
         _redirect_uris=(
-            'https://localhost:20444/authorized'
+            'https://localhost:8000/authorized'
         ),
     )
 
@@ -372,4 +372,4 @@ if __name__ == '__main__':
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.sqlite'
     })
     app = create_server(app)
-    app.run(port=20443, ssl_context='adhoc')
+    app.run(port=8888, ssl_context='adhoc')
