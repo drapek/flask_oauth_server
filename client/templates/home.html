@@ -1,0 +1,16 @@
+<h3>Your profile data:</h3>
+<ul>
+    <li>username: {{ username }}</li>
+    <li>email: {{ email }} </li>
+    <li>address: {{ address }}</li>
+</ul>
+
+{% if errors %}
+<div class="errors" style="color: red;">
+<h2> Errors: </h2>
+
+    {% for error in errors %}
+        {{ error }} <br>
+    {% endfor %}
+</div>
+{% endif %}

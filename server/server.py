@@ -1,5 +1,7 @@
 # coding: utf-8
 import logging
+import ssl
+
 from bcrypt import checkpw
 from urllib.parse import quote
 from datetime import datetime, timedelta
@@ -372,4 +374,6 @@ if __name__ == '__main__':
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///test.sqlite'
     })
     app = create_server(app)
+    ssl._create_default_https_context = ssl._create_unverified_context
+
     app.run(port=8888, ssl_context='adhoc')
